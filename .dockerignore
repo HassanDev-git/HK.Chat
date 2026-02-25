@@ -1,0 +1,9 @@
+node_modules/
+*.db
+.env
+client/android/
+client/.capacitor/
+*.apk
+*.log
+.git/
+.gitignore
