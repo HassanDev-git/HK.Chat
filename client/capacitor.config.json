@@ -3,6 +3,7 @@
   "appName": "HK Chat",
   "webDir": "dist",
   "server": {
+    "url": "http://206.189.85.23",
     "androidScheme": "https"
   },
   "plugins": {

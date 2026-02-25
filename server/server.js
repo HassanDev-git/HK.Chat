@@ -22,7 +22,7 @@ const server = http.createServer(app);
 // CORS origins
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',')
-  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
+  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://206.189.85.23'];
 
 // Socket.IO setup
 const io = new Server(server, {
