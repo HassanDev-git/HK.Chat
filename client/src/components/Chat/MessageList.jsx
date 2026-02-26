@@ -1,7 +1,7 @@
 import React from 'react';
 import MessageItem from './MessageItem';
 
-export default function MessageList({ messages, currentUser, onReply, messagesEndRef }) {
+export default function MessageList({ messages, currentUser, onReply, onForward, messagesEndRef }) {
   // Group messages by date
   const groupedMessages = [];
   let currentDate = null;
@@ -41,6 +41,7 @@ export default function MessageList({ messages, currentUser, onReply, messagesEn
             message={item.data}
             isOwn={item.data.sender_id === currentUser.id}
             onReply={onReply}
+            onForward={onForward}
           />
         );
       })}

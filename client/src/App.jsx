@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext';
 import Login from './components/Auth/Login';
 import Register from './components/Auth/Register';
 import MainLayout from './components/Layout/MainLayout';
+import JoinGroup from './components/Group/JoinGroup';
 
 function App() {
   const { user, loading } = useAuth();
@@ -22,6 +23,7 @@ function App() {
     <Routes>
       <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />
       <Route path="/register" element={!user ? <Register /> : <Navigate to="/" />} />
+      <Route path="/join/:inviteCode" element={user ? <JoinGroup /> : <Navigate to="/login" />} />
       <Route path="/*" element={user ? <MainLayout /> : <Navigate to="/login" />} />
     </Routes>
   );

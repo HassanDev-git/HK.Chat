@@ -7,10 +7,24 @@ import StatusPage from '../Status/StatusPage';
 import NewChat from '../Sidebar/NewChat';
 import CreateGroup from '../Group/CreateGroup';
 import GroupInfo from '../Group/GroupInfo';
+import NotificationToast from '../Notification/NotificationToast';
+import CallScreen from '../Call/CallScreen';
 import { useChat } from '../../context/ChatContext';
+import { useCall } from '../../context/CallContext';
 
 export default function MainLayout() {
-  const { activeChat, view } = useChat();
+  const { activeChat, view, openChat, chats, setView } = useChat();
+  const { callState } = useCall();
+
+  const handleNotificationClick = (notification) => {
+    if (notification.chatId) {
+      const chat = chats.find(c => c.id === notification.chatId);
+      if (chat) {
+        openChat(chat);
+        setView('chats');
+      }
+    }
+  };
 
   const renderSidePanel = () => {
     switch (view) {
@@ -26,6 +40,8 @@ export default function MainLayout() {
 
   return (
     <div className="main-layout">
+      <NotificationToast onClickNotification={handleNotificationClick} />
+      {callState !== 'idle' && <CallScreen />}
       <div className="side-panel">
         {renderSidePanel()}
       </div>

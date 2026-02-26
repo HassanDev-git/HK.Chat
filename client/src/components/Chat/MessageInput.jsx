@@ -17,6 +17,7 @@ export default function MessageInput({ onSend, onTyping, replyTo, onCancelReply,
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const recordingTimeRef = useRef(0);
 
   const handleSend = () => {
     if (!text.trim()) return;
@@ -73,20 +74,68 @@ export default function MessageInput({ onSend, onTyping, replyTo, onCancelReply,
   };
 
   const startRecording = async () => {
+    // Try multiple approaches for microphone access
+    let stream = null;
+    
+    // Method 1: Standard mediaDevices API (works on HTTPS and localhost)
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        console.warn('mediaDevices.getUserMedia failed:', err);
+      }
+    }
+    
+    // Method 2: Legacy getUserMedia (works on some HTTP connections)
+    if (!stream) {
+      const legacyGetUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+      if (legacyGetUserMedia) {
+        try {
+          stream = await new Promise((resolve, reject) => {
+            legacyGetUserMedia.call(navigator, { audio: true }, resolve, reject);
+          });
+        } catch (err) {
+          console.warn('Legacy getUserMedia failed:', err);
+        }
+      }
+    }
+
+    if (!stream) {
+      alert('Microphone access failed. If you are not on localhost, your browser may require HTTPS for microphone access. Try using localhost or enable HTTPS.');
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      // Find a supported MIME type
+      let mimeType = 'audio/webm';
+      const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4', ''];
+      for (const type of mimeTypes) {
+        if (type === '' || MediaRecorder.isTypeSupported(type)) {
+          mimeType = type || undefined;
+          break;
+        }
+      }
+
+      const recorderOptions = mimeType ? { mimeType } : {};
+      const mediaRecorder = new MediaRecorder(stream, recorderOptions);
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
-      mediaRecorder.ondataavailable = (e) => chunksRef.current.push(e.data);
+      recordingTimeRef.current = 0;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
       mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const finalDuration = Math.max(recordingTimeRef.current, 1);
+        const actualMime = mediaRecorder.mimeType || mimeType || 'audio/webm';
         stream.getTracks().forEach(t => t.stop());
+        if (chunksRef.current.length === 0) return;
+        const blob = new Blob(chunksRef.current, { type: actualMime });
+        if (blob.size === 0) return;
         setUploading(true);
         try {
+          const ext = actualMime.includes('ogg') ? '.ogg' : actualMime.includes('mp4') ? '.mp4' : '.webm';
           const formData = new FormData();
-          formData.append('voice', blob, 'voice-message.webm');
-          formData.append('duration', recordingTime);
+          formData.append('voice', blob, `voice-message${ext}`);
+          formData.append('duration', finalDuration);
           const res = await API.post('/upload/voice', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
           });
@@ -94,10 +143,11 @@ export default function MessageInput({ onSend, onTyping, replyTo, onCancelReply,
             type: 'voice', content: '',
             file_url: res.data.url, file_name: res.data.name,
             file_size: res.data.size, file_type: res.data.type,
-            duration: recordingTime
+            duration: finalDuration
           });
         } catch (err) {
           console.error('Voice upload failed:', err);
+          alert('Failed to upload voice message. Please try again.');
         } finally {
           setUploading(false);
         }
@@ -105,14 +155,27 @@ export default function MessageInput({ onSend, onTyping, replyTo, onCancelReply,
       mediaRecorder.start();
       setRecording(true);
       setRecordingTime(0);
-      timerRef.current = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
+      timerRef.current = setInterval(() => {
+        recordingTimeRef.current += 1;
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
     } catch (err) {
-      alert('Microphone access is required for voice messages');
+      console.error('Microphone error:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        alert('Microphone permission was denied. Please allow microphone access in your browser settings and try again.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        alert('No microphone found. Please connect a microphone and try again.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        alert('Microphone is in use by another application. Please close other apps using the mic and try again.');
+      } else {
+        alert('Could not access microphone. Make sure you are using HTTPS and have a microphone connected.');
+      }
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.requestData(); } catch(e) {}
       mediaRecorderRef.current.stop();
     }
     setRecording(false);
@@ -124,9 +187,12 @@ export default function MessageInput({ onSend, onTyping, replyTo, onCancelReply,
       mediaRecorderRef.current.ondataavailable = null;
       mediaRecorderRef.current.onstop = null;
       mediaRecorderRef.current.stop();
+      // Stop all tracks
+      mediaRecorderRef.current.stream?.getTracks().forEach(t => t.stop());
     }
     setRecording(false);
     setRecordingTime(0);
+    recordingTimeRef.current = 0;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   };
 

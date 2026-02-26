@@ -152,6 +152,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_statuses_user_id ON statuses(user_id);
   CREATE INDEX IF NOT EXISTS idx_users_unique_id ON users(unique_id);
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+  CREATE TABLE IF NOT EXISTS group_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    invite_code TEXT UNIQUE NOT NULL,
+    created_by INTEGER NOT NULL,
+    max_uses INTEGER DEFAULT 0,
+    use_count INTEGER DEFAULT 0,
+    expires_at TEXT DEFAULT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_group_invites_code ON group_invites(invite_code);
+  CREATE INDEX IF NOT EXISTS idx_group_invites_chat ON group_invites(chat_id);
 `);
 
 module.exports = db;

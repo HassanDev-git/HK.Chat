@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const db = require('../database');
 const { auth } = require('../middleware/auth');
 
@@ -196,7 +197,7 @@ router.put('/group/:chatId', auth, (req, res) => {
 router.post('/group/:chatId/members', auth, (req, res) => {
   try {
     const { userId } = req.body;
-    const chatId = req.params.chatId;
+    const chatId = parseInt(req.params.chatId);
 
     const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
     if (!membership || membership.role !== 'admin') {
@@ -218,7 +219,8 @@ router.post('/group/:chatId/members', auth, (req, res) => {
 // REMOVE MEMBER FROM GROUP
 router.delete('/group/:chatId/members/:userId', auth, (req, res) => {
   try {
-    const { chatId, userId } = req.params;
+    const chatId = parseInt(req.params.chatId);
+    const userId = req.params.userId;
 
     const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
     if (!membership || membership.role !== 'admin') {
@@ -240,7 +242,7 @@ router.delete('/group/:chatId/members/:userId', auth, (req, res) => {
 // LEAVE GROUP
 router.post('/group/:chatId/leave', auth, (req, res) => {
   try {
-    const chatId = req.params.chatId;
+    const chatId = parseInt(req.params.chatId);
     db.prepare('DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?').run(chatId, req.user.id);
 
     const user = db.prepare('SELECT display_name FROM users WHERE id = ?').get(req.user.id);
@@ -249,6 +251,17 @@ router.post('/group/:chatId/leave', auth, (req, res) => {
 
     res.json({ message: 'Left group' });
   } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE ALL CHATS for current user (must be before /:chatId to avoid matching)
+router.delete('/all/clear', auth, (req, res) => {
+  try {
+    db.prepare('DELETE FROM chat_members WHERE user_id = ?').run(req.user.id);
+    res.json({ message: 'All chats cleared' });
+  } catch (err) {
+    console.error('Delete all chats error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -299,6 +312,214 @@ router.put('/:chatId/mute', auth, (req, res) => {
     db.prepare('UPDATE chat_members SET is_muted = ? WHERE chat_id = ? AND user_id = ?').run(newState, chatId, req.user.id);
     res.json({ muted: !!newState });
   } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================
+// GROUP INVITE SYSTEM
+// ==================
+
+// GENERATE INVITE LINK for a group
+router.post('/group/:chatId/invite', auth, (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+
+    // Check group exists and user is a member
+    const chat = db.prepare('SELECT * FROM chats WHERE id = ? AND type = ?').get(chatId, 'group');
+    if (!chat) return res.status(404).json({ error: 'Group not found' });
+
+    const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
+    if (!membership || membership.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can generate invite links' });
+    }
+
+    // Check if there's already an active invite
+    const existing = db.prepare('SELECT * FROM group_invites WHERE chat_id = ? AND is_active = 1').get(chatId);
+    if (existing) {
+      return res.json({ invite: existing });
+    }
+
+    // Generate new invite code
+    const inviteCode = crypto.randomBytes(8).toString('hex');
+    const result = db.prepare(`
+      INSERT INTO group_invites (chat_id, invite_code, created_by) VALUES (?, ?, ?)
+    `).run(chatId, inviteCode, req.user.id);
+
+    const invite = db.prepare('SELECT * FROM group_invites WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ invite });
+  } catch (err) {
+    console.error('Generate invite error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET INVITE LINK for a group
+router.get('/group/:chatId/invite', auth, (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+    
+    const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
+    if (!membership) return res.status(403).json({ error: 'Not a member' });
+
+    const invite = db.prepare('SELECT * FROM group_invites WHERE chat_id = ? AND is_active = 1').get(chatId);
+    res.json({ invite: invite || null });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// REVOKE INVITE LINK
+router.delete('/group/:chatId/invite', auth, (req, res) => {
+  try {
+    const chatId = parseInt(req.params.chatId);
+    
+    const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
+    if (!membership || membership.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can revoke invite links' });
+    }
+
+    db.prepare('UPDATE group_invites SET is_active = 0 WHERE chat_id = ?').run(chatId);
+    res.json({ message: 'Invite revoked' });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// JOIN GROUP VIA INVITE CODE
+router.post('/group/join/:inviteCode', auth, (req, res) => {
+  try {
+    const { inviteCode } = req.params;
+
+    const invite = db.prepare('SELECT * FROM group_invites WHERE invite_code = ? AND is_active = 1').get(inviteCode);
+    if (!invite) {
+      return res.status(404).json({ error: 'Invalid or expired invite link' });
+    }
+
+    // Check max uses
+    if (invite.max_uses > 0 && invite.use_count >= invite.max_uses) {
+      return res.status(400).json({ error: 'This invite link has reached its maximum uses' });
+    }
+
+    // Check expiry
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'This invite link has expired' });
+    }
+
+    const chatId = invite.chat_id;
+
+    // Check if already a member
+    const existingMember = db.prepare('SELECT * FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
+    if (existingMember) {
+      // Already a member, just return the chat
+      const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chatId);
+      const members = db.prepare(`
+        SELECT u.id, u.display_name, u.unique_id, u.profile_pic, u.is_online, u.last_seen, cm.role
+        FROM chat_members cm
+        JOIN users u ON cm.user_id = u.id
+        WHERE cm.chat_id = ?
+      `).all(chatId);
+      return res.json({ chat: { ...chat, members }, alreadyMember: true });
+    }
+
+    // Add to group
+    db.prepare('INSERT INTO chat_members (chat_id, user_id, role) VALUES (?, ?, ?)').run(chatId, req.user.id, 'member');
+
+    // Update invite use count
+    db.prepare('UPDATE group_invites SET use_count = use_count + 1 WHERE id = ?').run(invite.id);
+
+    // Add system message
+    const joiner = db.prepare('SELECT display_name FROM users WHERE id = ?').get(req.user.id);
+    db.prepare(`INSERT INTO messages (chat_id, sender_id, type, content) VALUES (?, ?, 'system', ?)`)
+      .run(chatId, req.user.id, `${joiner.display_name} joined via invite link`);
+
+    // Return chat info
+    const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chatId);
+    const members = db.prepare(`
+      SELECT u.id, u.display_name, u.unique_id, u.profile_pic, u.is_online, u.last_seen, cm.role
+      FROM chat_members cm
+      JOIN users u ON cm.user_id = u.id
+      WHERE cm.chat_id = ?
+    `).all(chatId);
+
+    db.prepare("UPDATE chats SET updated_at = datetime('now') WHERE id = ?").run(chatId);
+
+    res.json({ chat: { ...chat, members }, joined: true });
+  } catch (err) {
+    console.error('Join via invite error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET INVITE INFO (public - for preview before joining)
+router.get('/invite/:inviteCode', auth, (req, res) => {
+  try {
+    const { inviteCode } = req.params;
+
+    const invite = db.prepare('SELECT * FROM group_invites WHERE invite_code = ? AND is_active = 1').get(inviteCode);
+    if (!invite) {
+      return res.status(404).json({ error: 'Invalid or expired invite link' });
+    }
+
+    const chat = db.prepare('SELECT id, name, description, group_pic, type FROM chats WHERE id = ?').get(invite.chat_id);
+    const memberCount = db.prepare('SELECT COUNT(*) as count FROM chat_members WHERE chat_id = ?').get(invite.chat_id);
+    const isMember = db.prepare('SELECT id FROM chat_members WHERE chat_id = ? AND user_id = ?').get(invite.chat_id, req.user.id);
+
+    res.json({
+      group: {
+        id: chat.id,
+        name: chat.name,
+        description: chat.description,
+        group_pic: chat.group_pic,
+        memberCount: memberCount.count
+      },
+      isMember: !!isMember
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ADD MEMBERS TO GROUP (admin adds directly)
+router.post('/group/:chatId/members/bulk', auth, (req, res) => {
+  try {
+    const { userIds } = req.body;
+    const chatId = parseInt(req.params.chatId);
+
+    const membership = db.prepare('SELECT role FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, req.user.id);
+    if (!membership || membership.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can add members' });
+    }
+
+    const insertMember = db.prepare('INSERT OR IGNORE INTO chat_members (chat_id, user_id, role) VALUES (?, ?, ?)');
+    const addedUsers = [];
+
+    for (const userId of userIds) {
+      const existing = db.prepare('SELECT id FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, userId);
+      if (!existing) {
+        insertMember.run(chatId, userId, 'member');
+        const u = db.prepare('SELECT display_name FROM users WHERE id = ?').get(userId);
+        if (u) {
+          db.prepare(`INSERT INTO messages (chat_id, sender_id, type, content) VALUES (?, ?, 'system', ?)`)
+            .run(chatId, req.user.id, `${u.display_name} was added to the group`);
+          addedUsers.push(userId);
+        }
+      }
+    }
+
+    db.prepare("UPDATE chats SET updated_at = datetime('now') WHERE id = ?").run(chatId);
+
+    // Return updated members
+    const members = db.prepare(`
+      SELECT u.id, u.display_name, u.unique_id, u.profile_pic, u.is_online, u.last_seen, cm.role
+      FROM chat_members cm
+      JOIN users u ON cm.user_id = u.id
+      WHERE cm.chat_id = ?
+    `).all(chatId);
+
+    res.json({ members, addedUsers });
+  } catch (err) {
+    console.error('Bulk add members error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

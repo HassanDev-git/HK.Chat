@@ -197,22 +197,22 @@ function setupSocket(io) {
     // ==================
 
     socket.on('call:initiate', (data) => {
-      const { targetUserId, callType } = data;
+      const { targetUserId, callType, offer } = data;
       const caller = db.prepare('SELECT id, display_name, profile_pic FROM users WHERE id = ?').get(userId);
       const targetSockets = onlineUsers.get(targetUserId);
       if (targetSockets) {
         targetSockets.forEach(sid => {
-          io.to(sid).emit('call:incoming', { caller, callType });
+          io.to(sid).emit('call:incoming', { caller, callType, offer });
         });
       }
     });
 
     socket.on('call:accept', (data) => {
-      const { callerId } = data;
+      const { callerId, answer } = data;
       const callerSockets = onlineUsers.get(callerId);
       if (callerSockets) {
         callerSockets.forEach(sid => {
-          io.to(sid).emit('call:accepted', { userId });
+          io.to(sid).emit('call:accepted', { userId, answer });
         });
       }
     });
@@ -233,6 +233,16 @@ function setupSocket(io) {
       if (targetSockets) {
         targetSockets.forEach(sid => {
           io.to(sid).emit('call:ended', { userId });
+        });
+      }
+    });
+
+    socket.on('call:ice-candidate', (data) => {
+      const { targetUserId, candidate } = data;
+      const targetSockets = onlineUsers.get(targetUserId);
+      if (targetSockets) {
+        targetSockets.forEach(sid => {
+          io.to(sid).emit('call:ice-candidate', { candidate, from: userId });
         });
       }
     });

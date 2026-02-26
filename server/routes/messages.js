@@ -73,6 +73,30 @@ router.post('/:chatId', auth, (req, res) => {
       return res.status(403).json({ error: 'Not a member of this chat' });
     }
 
+    // Check if blocked in private chat
+    const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chatId);
+    if (chat.type === 'private') {
+      const otherMember = db.prepare('SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?').get(chatId, req.user.id);
+      if (otherMember) {
+        // Check if the other user blocked me
+        const otherSettings = db.prepare('SELECT blocked_users FROM user_settings WHERE user_id = ?').get(otherMember.user_id);
+        if (otherSettings) {
+          const blockedByOther = JSON.parse(otherSettings.blocked_users || '[]');
+          if (blockedByOther.includes(req.user.id)) {
+            return res.status(403).json({ error: 'You cannot send messages to this user' });
+          }
+        }
+        // Check if I blocked the other user
+        const mySettings = db.prepare('SELECT blocked_users FROM user_settings WHERE user_id = ?').get(req.user.id);
+        if (mySettings) {
+          const myBlocked = JSON.parse(mySettings.blocked_users || '[]');
+          if (myBlocked.includes(otherMember.user_id)) {
+            return res.status(403).json({ error: 'You have blocked this user. Unblock to send messages.' });
+          }
+        }
+      }
+    }
+
     const result = db.prepare(`
       INSERT INTO messages (chat_id, sender_id, type, content, file_url, file_name, file_size, file_type, thumbnail_url, duration, reply_to, forwarded_from, is_forwarded)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

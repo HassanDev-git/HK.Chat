@@ -7,7 +7,14 @@
     "client": "cd client && npm run dev",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "install-all": "npm install && cd server && npm install && cd ../client && npm install",
-    "build": "cd client && npm run build"
+    "build": "cd client && npm run build",
+    "start": "cd client && npm run build && cd ../server && node server.js",
+    "production": "cd client && npm run build && cd .. && pm2 start ecosystem.config.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop hkchat-server",
+    "pm2:restart": "pm2 restart hkchat-server",
+    "pm2:logs": "pm2 logs hkchat-server",
+    "pm2:status": "pm2 status"
   },
   "dependencies": {
     "concurrently": "^8.2.2"

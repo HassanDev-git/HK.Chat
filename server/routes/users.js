@@ -38,6 +38,58 @@ router.get('/search', auth, (req, res) => {
   }
 });
 
+// GET SETTINGS (must be before /:id)
+router.get('/settings/me', auth, (req, res) => {
+  try {
+    const settings = db.prepare('SELECT * FROM user_settings WHERE user_id = ?').get(req.user.id);
+    res.json({ settings });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET BLOCKED USERS LIST (must be before /:id)
+router.get('/blocked/list', auth, (req, res) => {
+  try {
+    const settings = db.prepare('SELECT blocked_users FROM user_settings WHERE user_id = ?').get(req.user.id);
+    const blockedIds = JSON.parse(settings?.blocked_users || '[]');
+    
+    let blockedUsers = [];
+    if (blockedIds.length > 0) {
+      blockedUsers = db.prepare(`
+        SELECT id, display_name, unique_id, profile_pic 
+        FROM users WHERE id IN (${blockedIds.map(() => '?').join(',')})
+      `).all(...blockedIds);
+    }
+
+    res.json({ blockedUsers, blockedIds });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// CHECK IF USER IS BLOCKED (must be before /:id)
+router.get('/blocked/check/:userId', auth, (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId);
+    
+    // Check if I blocked them
+    const mySettings = db.prepare('SELECT blocked_users FROM user_settings WHERE user_id = ?').get(req.user.id);
+    const myBlocked = JSON.parse(mySettings?.blocked_users || '[]');
+    
+    // Check if they blocked me
+    const theirSettings = db.prepare('SELECT blocked_users FROM user_settings WHERE user_id = ?').get(targetId);
+    const theirBlocked = JSON.parse(theirSettings?.blocked_users || '[]');
+
+    res.json({ 
+      iBlockedThem: myBlocked.includes(targetId),
+      theyBlockedMe: theirBlocked.includes(req.user.id)
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET USER PROFILE
 router.get('/:id', auth, (req, res) => {
   try {
@@ -121,16 +173,6 @@ router.put('/settings', auth, (req, res) => {
     res.json({ message: 'Settings updated', settings });
   } catch (err) {
     console.error('Update settings error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// GET SETTINGS
-router.get('/settings/me', auth, (req, res) => {
-  try {
-    const settings = db.prepare('SELECT * FROM user_settings WHERE user_id = ?').get(req.user.id);
-    res.json({ settings });
-  } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
 });

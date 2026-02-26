@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
 import { BsCheck2All, BsCheck2, BsReply, BsStar, BsStarFill, BsTrash, BsPencil, BsDownload, BsForward } from 'react-icons/bs';
-import { FiMoreVertical } from 'react-icons/fi';
+import { FiMoreVertical, FiCopy, FiCornerUpRight } from 'react-icons/fi';
 
-export default function MessageItem({ message, isOwn, onReply }) {
+export default function MessageItem({ message, isOwn, onReply, onForward }) {
   const { deleteMessage, editMessage, starMessage } = useChat();
   const { user } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
@@ -101,15 +101,15 @@ export default function MessageItem({ message, isOwn, onReply }) {
       case 'audio':
         return (
           <div className="message-audio">
-            <audio src={message.file_url} controls />
+            <audio src={message.file_url} controls preload="metadata" />
           </div>
         );
       case 'voice':
         return (
           <div className="message-voice">
             <div className="voice-wave">🎤</div>
-            <audio src={message.file_url} controls className="voice-audio" />
-            {message.duration && <span className="voice-duration">{Math.floor(message.duration / 60)}:{String(message.duration % 60).padStart(2, '0')}</span>}
+            <audio src={message.file_url} controls preload="metadata" className="voice-audio" />
+            {message.duration > 0 && <span className="voice-duration">{Math.floor(message.duration / 60)}:{String(message.duration % 60).padStart(2, '0')}</span>}
           </div>
         );
       case 'document':
@@ -167,6 +167,7 @@ export default function MessageItem({ message, isOwn, onReply }) {
         {!message.is_deleted && (
           <div className="message-hover-menu">
             <button onClick={() => onReply(message)} title="Reply"><BsReply /></button>
+            <button onClick={() => onForward && onForward(message)} title="Forward"><FiCornerUpRight /></button>
             <button onClick={() => setShowMenu(!showMenu)} title="More"><FiMoreVertical /></button>
           </div>
         )}
@@ -175,11 +176,16 @@ export default function MessageItem({ message, isOwn, onReply }) {
         {showMenu && (
           <div className="message-context-menu" onClick={() => setShowMenu(false)}>
             <button onClick={() => onReply(message)}><BsReply /> Reply</button>
+            <button onClick={() => { onForward && onForward(message); setShowMenu(false); }}><FiCornerUpRight /> Forward</button>
+            <button onClick={() => { 
+              const textToCopy = message.content || '';
+              navigator.clipboard.writeText(textToCopy); 
+              setShowMenu(false); 
+            }}><FiCopy /> Copy</button>
             <button onClick={handleStar}>{starred ? <BsStarFill /> : <BsStar />} {starred ? 'Unstar' : 'Star'}</button>
             {isOwn && message.type === 'text' && (
               <button onClick={() => { setEditing(true); setShowMenu(false); }}><BsPencil /> Edit</button>
             )}
-            <button onClick={() => { navigator.clipboard.writeText(message.content); setShowMenu(false); }}>📋 Copy</button>
             {isOwn && <button onClick={() => handleDelete(true)} className="danger"><BsTrash /> Delete for Everyone</button>}
             <button onClick={() => handleDelete(false)} className="danger"><BsTrash /> Delete for Me</button>
           </div>

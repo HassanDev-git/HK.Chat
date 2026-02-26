@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
-import { FiArrowLeft, FiUser, FiLock, FiBell, FiMonitor, FiHelpCircle, FiInfo, FiChevronRight, FiMoon, FiSun } from 'react-icons/fi';
-import { BsShieldLock, BsChatDots, BsKeyboard } from 'react-icons/bs';
+import API from '../../api/axios';
+import { FiArrowLeft, FiUser, FiLock, FiBell, FiMonitor, FiHelpCircle, FiInfo, FiChevronRight, FiMoon, FiSun, FiTrash2 } from 'react-icons/fi';
+import { BsShieldLock, BsChatDots, BsKeyboard, BsShieldExclamation } from 'react-icons/bs';
 
 export default function Settings() {
   const { user, settings, updateSettings, logout } = useAuth();
-  const { setView } = useChat();
+  const { setView, loadChats } = useChat();
   const [activeSection, setActiveSection] = useState(null);
 
   const handleSettingChange = async (key, value) => {
@@ -153,9 +154,30 @@ export default function Settings() {
               </select>
             </div>
           </div>
+          <div className="settings-group">
+            <h4>Danger Zone</h4>
+            <button className="setting-item danger-btn" onClick={async () => {
+              if (!window.confirm('Are you sure you want to delete ALL your chats? This cannot be undone.')) return;
+              try {
+                await API.delete('/chats/all/clear');
+                loadChats();
+                alert('All chats have been cleared.');
+              } catch (err) {
+                console.error('Delete all chats failed:', err);
+                alert('Failed to delete chats.');
+              }
+            }}>
+              <FiTrash2 />
+              <span>Delete All Chats</span>
+            </button>
+          </div>
         </div>
       </div>
     );
+  }
+
+  if (activeSection === 'blocked_users') {
+    return <BlockedUsersSection onBack={() => setActiveSection(null)} />;
   }
 
   return (
@@ -233,6 +255,15 @@ export default function Settings() {
             <FiChevronRight />
           </button>
 
+          <button className="settings-menu-item" onClick={() => setActiveSection('blocked_users')}>
+            <BsShieldExclamation className="menu-icon" />
+            <div className="menu-text">
+              <span>Blocked Users</span>
+              <p>Manage blocked contacts</p>
+            </div>
+            <FiChevronRight />
+          </button>
+
           <button className="settings-menu-item" onClick={() => setActiveSection('keyboard')}>
             <BsKeyboard className="menu-icon" />
             <div className="menu-text">
@@ -251,6 +282,79 @@ export default function Settings() {
             <FiChevronRight />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function BlockedUsersSection({ onBack }) {
+  const [blockedUsers, setBlockedUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadBlockedUsers();
+  }, []);
+
+  const loadBlockedUsers = async () => {
+    try {
+      const res = await API.get('/users/blocked/list');
+      setBlockedUsers(res.data.blockedUsers);
+    } catch (err) {
+      console.error('Failed to load blocked users:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnblock = async (userId) => {
+    try {
+      await API.post(`/users/block/${userId}`);
+      setBlockedUsers(prev => prev.filter(u => u.id !== userId));
+    } catch (err) {
+      console.error('Unblock failed:', err);
+    }
+  };
+
+  return (
+    <div className="sidebar settings-panel">
+      <div className="sidebar-header">
+        <button className="icon-btn" onClick={onBack}>
+          <FiArrowLeft />
+        </button>
+        <h3>Blocked Users</h3>
+      </div>
+      <div className="settings-content">
+        {loading ? (
+          <div className="loading-state">
+            <div className="loading-spinner small"></div>
+          </div>
+        ) : blockedUsers.length === 0 ? (
+          <div className="empty-state">
+            <BsShieldExclamation size={48} />
+            <p>No blocked users</p>
+          </div>
+        ) : (
+          <div className="blocked-users-list">
+            {blockedUsers.map(u => (
+              <div key={u.id} className="blocked-user-item">
+                <div className="blocked-user-avatar">
+                  {u.profile_pic ? (
+                    <img src={u.profile_pic} alt="" className="avatar" />
+                  ) : (
+                    <div className="avatar-placeholder">{u.display_name?.[0]}</div>
+                  )}
+                </div>
+                <div className="blocked-user-info">
+                  <span className="blocked-user-name">{u.display_name}</span>
+                  <span className="blocked-user-id">{u.unique_id}</span>
+                </div>
+                <button className="unblock-btn" onClick={() => handleUnblock(u.id)}>
+                  Unblock
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

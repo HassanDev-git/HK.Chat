@@ -1,13 +1,14 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import API from '../api/axios';
 import { useAuth } from './AuthContext';
 import { useSocket } from './SocketContext';
+import { triggerNotification } from '../components/Notification/NotificationToast';
 
 const ChatContext = createContext();
 
 export function ChatProvider({ children }) {
   const { user } = useAuth();
-  const { on, off, emit } = useSocket();
+  const { socket, connected, on, off, emit } = useSocket();
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -15,6 +16,99 @@ export function ChatProvider({ children }) {
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [view, setView] = useState('chats'); // chats, status, settings, profile, newchat, newgroup
+  const activeChatRef = useRef(null);
+  const notificationSoundRef = useRef(null);
+  const showNotificationRef = useRef(null);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  // Request notification permission on mount
+  useEffect(() => {
+    if (user && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    // We'll create notification sound lazily on first use (browser requires user interaction for AudioContext)
+    notificationSoundRef.current = null;
+  }, [user]);
+
+  // Lazily create and play notification sound
+  const playNotificationSound = useCallback(() => {
+    try {
+      if (!notificationSoundRef.current) {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.15, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < buffer.length; i++) {
+          data[i] = Math.sin(2 * Math.PI * 800 * i / audioCtx.sampleRate) * Math.exp(-3 * i / buffer.length);
+        }
+        notificationSoundRef.current = { audioCtx, buffer };
+      }
+      const { audioCtx, buffer } = notificationSoundRef.current;
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.start();
+    } catch (e) {
+      console.log('Notification sound error:', e);
+    }
+  }, []);
+
+  const updateTitleBadge = useCallback(() => {
+    const totalUnread = chats.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+    document.title = totalUnread > 0 ? `(${totalUnread}) HK Chat` : 'HK Chat';
+  }, [chats]);
+
+  // Notification helper
+  const showNotification = useCallback((message) => {
+    // Play notification sound
+    playNotificationSound();
+
+    // Build notification text
+    const senderName = message.sender_name || 'Someone';
+    let body = message.content || '';
+    if (message.type === 'image') body = '📷 Photo';
+    else if (message.type === 'video') body = '🎥 Video';
+    else if (message.type === 'voice') body = '🎤 Voice message';
+    else if (message.type === 'audio') body = '🎵 Audio';
+    else if (message.type === 'document') body = '📄 Document';
+
+    // In-app toast notification
+    triggerNotification({
+      senderName,
+      text: body,
+      chatId: message.chat_id
+    });
+
+    // Browser notification (when tab is not focused)
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      const notification = new Notification(`HK Chat - ${senderName}`, {
+        body,
+        icon: '/manifest.json',
+        tag: `msg-${message.id}`,
+        silent: true // We play our own sound
+      });
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+      // Auto close after 5 seconds
+      setTimeout(() => notification.close(), 5000);
+    }
+
+    // Update page title with unread count
+    updateTitleBadge();
+  }, [playNotificationSound, updateTitleBadge]);
+
+  // Keep notification ref in sync
+  useEffect(() => {
+    showNotificationRef.current = showNotification;
+  }, [showNotification]);
 
   const loadChats = useCallback(async () => {
     if (!user) return;
@@ -33,26 +127,40 @@ export function ChatProvider({ children }) {
     if (user) loadChats();
   }, [user, loadChats]);
 
-  // Socket event listeners
+  // Update title badge when chats change
   useEffect(() => {
-    if (!user) return;
+    updateTitleBadge();
+  }, [chats, updateTitleBadge]);
+
+  // Socket event listeners - use refs to avoid stale closures
+  useEffect(() => {
+    if (!user || !socket || !connected) return;
 
     const handleNewMessage = ({ chatId, message }) => {
+      const currentActiveChat = activeChatRef.current;
+      
       // Update messages if in active chat
-      if (activeChat?.id === chatId) {
+      if (currentActiveChat?.id === chatId) {
         setMessages(prev => {
           if (prev.find(m => m.id === message.id)) return prev;
           return [...prev, message];
         });
       }
+
+      // Show notification for messages not in active chat
+      if (currentActiveChat?.id !== chatId || document.hidden) {
+        showNotificationRef.current?.(message);
+      }
+
       // Update chat list
       setChats(prev => {
+        const currentActive = activeChatRef.current;
         return prev.map(c => {
           if (c.id === chatId) {
             return {
               ...c,
               lastMessage: message,
-              unread_count: activeChat?.id === chatId ? 0 : (c.unread_count || 0) + 1,
+              unread_count: currentActive?.id === chatId ? 0 : (c.unread_count || 0) + 1,
               updated_at: message.created_at
             };
           }
@@ -68,8 +176,18 @@ export function ChatProvider({ children }) {
     const handleNewChat = ({ chat }) => {
       setChats(prev => {
         if (prev.find(c => c.id === chat.id)) return prev;
-        return [chat, ...prev];
+        // For private chats, fix the otherUser perspective
+        let fixedChat = { ...chat };
+        if (chat.type === 'private' && chat.members) {
+          const other = chat.members.find(m => m.id !== user.id);
+          if (other) {
+            fixedChat.otherUser = other;
+          }
+        }
+        return [fixedChat, ...prev];
       });
+      // Join the chat room
+      socket.emit('chat:join', { chatId: chat.id });
     };
 
     const handleTypingStart = ({ chatId, userId, userName }) => {
@@ -97,7 +215,7 @@ export function ChatProvider({ children }) {
     };
 
     const handleMessageDeleted = ({ messageId, chatId }) => {
-      if (activeChat?.id === chatId) {
+      if (activeChatRef.current?.id === chatId) {
         setMessages(prev => prev.map(m =>
           m.id === messageId ? { ...m, is_deleted: 1, content: 'This message was deleted', file_url: null } : m
         ));
@@ -105,7 +223,7 @@ export function ChatProvider({ children }) {
     };
 
     const handleMessageEdited = ({ messageId, chatId, content }) => {
-      if (activeChat?.id === chatId) {
+      if (activeChatRef.current?.id === chatId) {
         setMessages(prev => prev.map(m =>
           m.id === messageId ? { ...m, content, is_edited: 1 } : m
         ));
@@ -113,7 +231,7 @@ export function ChatProvider({ children }) {
     };
 
     const handleMessageRead = ({ chatId, userId: readerId }) => {
-      if (activeChat?.id === chatId) {
+      if (activeChatRef.current?.id === chatId) {
         setMessages(prev => prev.map(m => {
           if (m.sender_id === user.id) {
             let readBy = typeof m.read_by === 'string' ? JSON.parse(m.read_by || '[]') : (m.read_by || []);
@@ -127,24 +245,24 @@ export function ChatProvider({ children }) {
       }
     };
 
-    on('message:receive', handleNewMessage);
-    on('chat:new', handleNewChat);
-    on('typing:start', handleTypingStart);
-    on('typing:stop', handleTypingStop);
-    on('message:deleted', handleMessageDeleted);
-    on('message:edited', handleMessageEdited);
-    on('message:read', handleMessageRead);
+    socket.on('message:receive', handleNewMessage);
+    socket.on('chat:new', handleNewChat);
+    socket.on('typing:start', handleTypingStart);
+    socket.on('typing:stop', handleTypingStop);
+    socket.on('message:deleted', handleMessageDeleted);
+    socket.on('message:edited', handleMessageEdited);
+    socket.on('message:read', handleMessageRead);
 
     return () => {
-      off('message:receive', handleNewMessage);
-      off('chat:new', handleNewChat);
-      off('typing:start', handleTypingStart);
-      off('typing:stop', handleTypingStop);
-      off('message:deleted', handleMessageDeleted);
-      off('message:edited', handleMessageEdited);
-      off('message:read', handleMessageRead);
+      socket.off('message:receive', handleNewMessage);
+      socket.off('chat:new', handleNewChat);
+      socket.off('typing:start', handleTypingStart);
+      socket.off('typing:stop', handleTypingStop);
+      socket.off('message:deleted', handleMessageDeleted);
+      socket.off('message:edited', handleMessageEdited);
+      socket.off('message:read', handleMessageRead);
     };
-  }, [user, activeChat, on, off]);
+  }, [user, socket, connected]);
 
   const openChat = async (chat) => {
     setActiveChat(chat);
@@ -264,9 +382,32 @@ export function ChatProvider({ children }) {
   const forwardMessage = async (messageId, chatIds) => {
     try {
       const res = await API.post(`/messages/${messageId}/forward`, { chatIds });
-      return res.data.messages;
+      const forwarded = res.data.messages;
+      
+      // Emit socket events for each forwarded message
+      forwarded.forEach(msg => {
+        emit('message:send', { chatId: msg.chat_id, message: msg });
+      });
+
+      // Update chat list
+      setChats(prev => {
+        let updated = [...prev];
+        forwarded.forEach(msg => {
+          updated = updated.map(c =>
+            c.id === msg.chat_id ? { ...c, lastMessage: msg, updated_at: msg.created_at } : c
+          );
+        });
+        return updated.sort((a, b) => {
+          if (a.member_pinned && !b.member_pinned) return -1;
+          if (!a.member_pinned && b.member_pinned) return 1;
+          return new Date(b.updated_at) - new Date(a.updated_at);
+        });
+      });
+
+      return forwarded;
     } catch (err) {
       console.error('Failed to forward message:', err);
+      throw err;
     }
   };
 

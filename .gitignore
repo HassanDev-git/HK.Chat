@@ -1,6 +1,9 @@
 node_modules/
 server/uploads/
 server/*.db
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
 server/.env
 client/node_modules/
 client/dist/
@@ -8,4 +11,5 @@ client/android/
 client/.capacitor/
 *.apk
 *.log
+logs/
 .DS_Store
