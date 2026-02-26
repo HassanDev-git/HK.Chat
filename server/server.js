@@ -23,7 +23,7 @@ const server = http.createServer(app);
 // CORS origins - allow all local network IPs
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',')
-  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://206.189.85.23'];
+  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://146.190.49.154'];
 
 // Also allow any IP on common local network ranges
 const corsOriginHandler = (origin, callback) => {
